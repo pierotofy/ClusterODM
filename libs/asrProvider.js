@@ -56,12 +56,18 @@ module.exports = {
         return asrProvider;
     },
 
-    isAllowedToCreateNewNodes: function(){
+    isAllowedToCreateNewNodes: function(numImages){
         if (!asrProvider) return false;
         if (asrProvider.getMachinesLimit() === -1) return true; // no limit
         
         const autoSpawnedNodesCount = nodes.filter(n => n.isAutoSpawned()).length;
-        return (asrProvider.getNodesPendingCreation() + autoSpawnedNodesCount) < asrProvider.getMachinesLimit();
+        
+        // First check, total machines
+        const totalMachines = asrProvider.getNodesPendingCreation() + autoSpawnedNodesCount;
+        if (totalMachines >= asrProvider.getMachinesLimit()) return false;
+
+        // Second check, machine limit for specific number of images
+        // TODO
     },
 
     canHandle: function(imagesCount){

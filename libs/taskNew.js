@@ -268,7 +268,7 @@ module.exports = {
 
         // Do we need to / can we create a new node via autoscaling?
         const autoscale = (!node || node.availableSlots() === 0) && 
-                            asrProvider.isAllowedToCreateNewNodes() &&
+                            asrProvider.isAllowedToCreateNewNodes(fileNames.length) &&
                             asrProvider.canHandle(fileNames.length);
 
         if (autoscale) node = nodes.referenceNode(); // Use the reference node for task options purposes

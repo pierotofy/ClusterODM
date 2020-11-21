@@ -49,7 +49,7 @@ module.exports = class HetznerAsrProvider extends AbstractASRProvider{
 
             "imageSizeMapping": [
                 {"maxImages": 5, "slug": "cx11"},
-                {"maxImages": 50, "slug": "cx21"}
+                {"maxImages": 50, "slug": "cx21", "machinesLimit": 1}
             ],
             "minImages": -1,
 
@@ -92,6 +92,12 @@ module.exports = class HetznerAsrProvider extends AbstractASRProvider{
 
     getMachinesLimit(){
         return this.getConfig("machinesLimit", -1);
+    }
+
+    getMachinesLimitFor(imagesCount){
+        const ism = this.getImageSizeMappingFor(imagesCount);
+        if (ism !== null && ism.machinesLimit) return ism.machinesLimit;
+        else return -1;
     }
 
     getCreateRetries(){
@@ -186,19 +192,22 @@ module.exports = class HetznerAsrProvider extends AbstractASRProvider{
                      `--token ${nodeToken}`].join(" "));
     }
 
-    getImageSlugFor(imagesCount){
+    getImageSizeMappingFor(imagesCount){
         const im = this.getConfig("imageSizeMapping");
 
-        let slug = null;
         for (var k in im){
             const mapping = im[k];
             if (mapping['maxImages'] >= imagesCount){
-                slug = mapping['slug'];
-                break;
+                return mapping;
             }
         }
 
-        return slug;
+        return null;
+    }
+
+    getImageSlugFor(imagesCount){
+        const ism = this.getImageSizeMappingFor(imagesCount);
+        return ism !== null ? ism.slug : null;
     }
 
     getMaxRuntime(){

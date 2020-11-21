@@ -78,6 +78,10 @@ module.exports = class AbstractASRProvider{
         return -1;
     }
 
+    getMachinesLimitFor(imagesCount){
+        return -1;
+    }
+
     getNodesPendingCreation(){
         return this.nodesPendingCreation;
     }

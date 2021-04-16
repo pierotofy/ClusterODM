@@ -160,11 +160,11 @@ module.exports = class AWSAsrProvider extends AbstractASRProvider{
             "--amazonec2-security-group", this.getConfig("securityGroup")
         ];
 
-        if (this.getConfig("monitoring", false)) {
+        if (this.getConfig("monitoring")) {
             args.push("--amazonec2-monitoring");
         }
 
-        if (this.getConfig("spot", false)) {
+        if (this.getConfig("spot")) {
             args.push("--amazonec2-request-spot-instance");
             args.push("--amazonec2-spot-price");
             args.push(image_props["spotPrice"]);
@@ -173,6 +173,11 @@ module.exports = class AWSAsrProvider extends AbstractASRProvider{
         if (this.getConfig("tags", []).length > 0){
             args.push("--amazonec2-tags");
             args.push(this.getConfig("tags").join(","));
+        }
+
+        if (this.getConfig("engineInstallUrl")){
+            args.push("--engine-install-url")
+            args.push(this.getConfig("engineInstallUrl"));
         }
 
         return args;

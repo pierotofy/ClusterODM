@@ -31,10 +31,52 @@ const asrProvider = require('./asrProvider');
 const logger = require('./logger');
 const events = require('events');
 
+const assureUniqueFilename = (dstPath, filename) => {
+    return new Promise((resolve, _) => {
+        const dstFile = path.join(dstPath, filename);
+        fs.exists(dstFile, async exists => {
+            if (!exists) resolve(filename);
+            else{
+                const parts = filename.split(".");
+                if (parts.length > 1){
+                    resolve(await assureUniqueFilename(dstPath, 
+                        `${parts.slice(0, parts.length - 1).join(".")}_.${parts[parts.length - 1]}`));
+                }else{
+                    // Filename without extension? Strange..
+                    resolve(await assureUniqueFilename(dstPath, filename + "_"));
+                }
+            }
+        });
+    });
+};
+
+const getUuid = async (req) => {
+    if (req.headers['set-uuid']){
+        const userUuid = req.headers['set-uuid'];
+        
+        // Valid UUID and no other task with same UUID?
+        console.log(userUuid);
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userUuid)){
+            if (await tasktable.lookup(userUuid)){
+                throw new Error(`Invalid set-uuid: ${userUuid}`);
+            }else if (await routetable.lookup(userUuid)){
+                throw new Error(`Invalid set-uuid: ${userUuid}`);
+            }else{
+                return userUuid;
+            }
+        }else{
+            throw new Error(`Invalid set-uuid: ${userUuid}`);
+        }
+    }
+
+    return utils.uuidv4();
+};
+
 module.exports = {
     // @return {object} Context object with methods and variables to use during task/new operations 
-    createContext: function(req, res){
-        const uuid = utils.uuidv4(); // TODO: add support for set-uuid header parameter
+    createContext: async function(req, res){
+        let uuid = await getUuid(req);
+
         const tmpPath = path.join('tmp', uuid);
 
         if (!fs.existsSync(tmpPath)) fs.mkdirSync(tmpPath);
@@ -53,6 +95,7 @@ module.exports = {
     formDataParser: function(req, onFinish, options = {}){
         if (options.saveFilesToDir === undefined) options.saveFilesToDir = false;
         if (options.parseFields === undefined) options.parseFields = true;
+        if (options.limits === undefined) options.limits = {};
         
         const busboy = new Busboy({ headers: req.headers });
 
@@ -63,7 +106,7 @@ module.exports = {
             outputs: null,
             dateCreated: null,
             error: null,
-
+            webhook: "",
             fileNames: [],
             imagesCount: 0
         };
@@ -94,15 +137,27 @@ module.exports = {
                 else if (fieldname === 'dateCreated' && !isNaN(parseInt(val))){
                     params.dateCreated = parseInt(val);
                 }
+
+                else if (fieldname === 'webhook' && val){
+                    params.webhook = val;
+                }
             });
         }
         if (options.saveFilesToDir){
-            busboy.on('file', function(fieldname, file, filename, encoding, mimetype) {
+            busboy.on('file', async function(fieldname, file, filename, encoding, mimetype) {
                 if (fieldname === 'images'){
+                    if (options.limits.maxImages && params.imagesCount > options.limits.maxImages){
+                        params.error = "Max images count exceeded.";
+                        file.resume();
+                        return;
+                    }
+                    
                     filename = utils.sanitize(filename);
                     
                     // Special case
                     if (filename === 'body.json') filename = '_body.json';
+
+                    filename = await assureUniqueFilename(options.saveFilesToDir, filename);
 
                     const name = path.basename(filename);
                     params.fileNames.push(name);
@@ -117,11 +172,18 @@ module.exports = {
                             saveStream.close();
                             saveStream = null;
                         }
+                        if (fs.exists(saveTo, exists => {
+                            fs.unlink(saveTo, err => {
+                                if (err) logger.error(err);
+                            });
+                        }));
                     };
                     req.on('close', handleClose);
+                    req.on('abort', handleClose);
 
                     file.on('end', () => {
                         req.removeListener('close', handleClose);
+                        req.removeListener('abort', handleClose);
                         saveStream = null;
                     });
 
@@ -139,6 +201,7 @@ module.exports = {
 
     getTaskIdFromPath: function(pathname){
         const matches = pathname.match(/\/([\w\d]+\-[\w\d]+\-[\w\d]+\-[\w\d]+\-[\w\d]+)$/);
+
         if (matches && matches[1]){
             return matches[1];        
         }else return null;
@@ -204,6 +267,11 @@ module.exports = {
                             odmOption.value = Math.max(lo.between.min, Math.min(lo.between.max, odmOption.value));
                         }
                     }
+
+                    // Handle booleans
+                    if (lo.value === 'true'){
+                        odmOption.value = true;
+                    }
                 }
             }
 
@@ -217,7 +285,7 @@ module.exports = {
 
     process: async function(req, res, cloudProvider, uuid, params, token, limits, getLimitedOptions){
         const tmpPath = path.join("tmp", uuid);
-        const { options, taskName, skipPostProcessing, outputs, dateCreated, fileNames, imagesCount} = params;
+        const { options, taskName, skipPostProcessing, outputs, dateCreated, fileNames, imagesCount, webhook } = params;
 
         if (fileNames.length < 2){
             throw new Error(`Not enough images (${fileNames.length} files uploaded)`);
@@ -339,6 +407,12 @@ module.exports = {
                             contents: "true"
                         });
                     }
+                    if (webhook){
+                        body.push({
+                            name: 'webhook',
+                            contents: webhook
+                        });
+                    }
                     if (outputs){
                         body.push({
                             name: 'outputs',
@@ -432,7 +506,7 @@ module.exports = {
                     const taskInfo = taskTableEntry.taskInfo;
                     if (taskInfo){
                         taskInfo.status.code = statusCodes.FAILED;
-                        await tasktable.add(uuid, { taskInfo, output: [err.message] });
+                        await tasktable.add(uuid, { taskInfo, output: [err.message] }, token);
                         logger.warn(`Cannot forward task ${uuid} to processing node ${node}: ${err.message}`);
                     }
                 }
@@ -458,8 +532,14 @@ module.exports = {
                         // If autoscale is enabled, simply retry on same node
                         // otherwise switch to another node
                         if (!autoscale){
-                            node = await nodes.findBestAvailableNode(imagesCount, true);
-                            logger.warn(`Switched ${uuid} to ${node}`);
+                            const newNode = await nodes.findBestAvailableNode(imagesCount, true);
+                            if (newNode){
+                                node = newNode;
+                                logger.warn(`Switched ${uuid} to ${node}`);
+                            }else{
+                                // No nodes available
+                                logger.warn(`No other nodes available to process ${uuid}, we'll retry the same one.`);
+                            }
                         }
 
                         await doUpload();
@@ -467,10 +547,10 @@ module.exports = {
                         throw new Error(`Failed to forward task to processing node after ${retries} attempts. Try again later.`);
                     }
                 }
-            };  
+            };
 
             // Add item to task table
-            await tasktable.add(uuid, { taskInfo, abort: abortTask, output: ["Launching... please wait! This can take a few minutes."] });
+            await tasktable.add(uuid, { taskInfo, abort: abortTask, output: ["Launching... please wait! This can take a few minutes."] }, token);
 
             // Send back response to user right away
             utils.json(res, { uuid });
